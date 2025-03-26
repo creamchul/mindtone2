@@ -1,297 +1,275 @@
 import streamlit as st
 import openai
-import os
-from datetime import datetime
-from dotenv import load_dotenv
-from database import init_db, get_db, hash_password, verify_password
-from models import User, Conversation, Message, Feedback
-from sqlalchemy.orm import Session
 import pandas as pd
 import plotly.express as px
+from datetime import datetime
+import os
+from dotenv import load_dotenv
 
-# .env 파일 로드
+# 환경 변수 로드
 load_dotenv()
 
-# 데이터베이스 초기화
-init_db()
+# OpenAI API 키 설정
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 # 페이지 설정
 st.set_page_config(
     page_title="Mindtone - 감정 지원 챗봇",
-    page_icon="💭",
-    layout="centered"
+    page_icon="🧠",
+    layout="wide"
 )
 
-# OpenAI API 키 설정
-openai.api_key = os.getenv('OPENAI_API_KEY')
-if not openai.api_key:
-    st.error("OpenAI API 키가 설정되지 않았습니다. .env 파일에 OPENAI_API_KEY를 설정해주세요.")
-    st.stop()
-
-# 세션 상태 초기화
-if 'user_id' not in st.session_state:
-    st.session_state.user_id = None
-if 'username' not in st.session_state:
-    st.session_state.username = None
-if 'messages' not in st.session_state:
-    st.session_state.messages = []
-if 'current_emotion' not in st.session_state:
-    st.session_state.current_emotion = None
-if 'current_conversation_id' not in st.session_state:
-    st.session_state.current_conversation_id = None
-if 'page' not in st.session_state:
-    st.session_state.page = 'login'
-if 'show_stats' not in st.session_state:
-    st.session_state.show_stats = False
-
-# 감정 버튼 스타일 설정
-emotion_button_style = """
+# CSS 스타일 추가
+st.markdown("""
 <style>
-    div.emotion-button > button {
-        background-color: #f0f2f6;
-        border-radius: 12px;
-        padding: 15px 15px;
-        font-size: 16px;
+    .user-bubble {
+        background-color: #E0E0FE;
+        padding: 10px 15px;
+        border-radius: 20px 20px 5px 20px;
+        margin: 5px 0;
+        display: inline-block;
+        max-width: 80%;
+        float: right;
+        clear: both;
+    }
+    
+    .ai-bubble {
+        background-color: #F0F0F0;
+        padding: 10px 15px;
+        border-radius: 20px 20px 20px 5px;
+        margin: 5px 0;
+        display: inline-block;
+        max-width: 80%;
+        float: left;
+        clear: both;
+    }
+    
+    .emotion-button {
+        border-radius: 15px;
+        padding: 15px 20px;
         margin: 5px;
+        font-size: 16px;
+        font-weight: bold;
         transition: all 0.3s;
     }
-    div.emotion-button > button:hover {
-        background-color: #e0e2e6;
-        transform: translateY(-2px);
+    
+    .emotion-button:hover {
+        transform: scale(1.05);
     }
-    div.emotion-active > button {
-        background-color: #6c7ac9;
-        color: white;
+    
+    .chat-container {
+        overflow-y: auto;
+        height: 400px;
+        padding: 10px;
+        background-color: #FFFFFF;
+        border-radius: 10px;
+        margin-bottom: 10px;
+    }
+    
+    .clearfix::after {
+        content: "";
+        clear: both;
+        display: table;
     }
 </style>
-"""
-st.markdown(emotion_button_style, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
-# 전역 변수로 감정 버튼 정의
-emotions = {
-    "기쁨": "😊",
-    "슬픔": "😢",
-    "화남": "😠",
-    "불안": "😰",
-    "지침": "😩",
-    "혼란": "😕",
-    "희망": "🌈",
-    "감사": "🙏"
-}
+# 세션 상태 초기화
+if 'messages' not in st.session_state:
+    st.session_state.messages = []
 
-# 로그인 페이지
-def show_login_page():
-    st.title("Mindtone")
-    st.subheader("감정 지원 AI 챗봇")
-    st.write("계속하려면 로그인하거나 회원가입하세요.")
-    
-    login_tab, register_tab = st.tabs(["로그인", "회원가입"])
-    
-    with login_tab:
-        login_username = st.text_input("사용자 이름", key="login_username")
-        login_password = st.text_input("비밀번호", type="password", key="login_password")
-        if st.button("로그인", key="login_button"):
-            db = next(get_db())
-            user = db.query(User).filter(User.username == login_username).first()
-            if user and verify_password(login_password, user.password_hash):
-                st.session_state.user_id = user.id
-                st.session_state.username = user.username
-                st.session_state.page = 'emotion_select'
-                st.success("로그인 성공!")
-                st.rerun()
-            else:
-                st.error("잘못된 사용자 이름 또는 비밀번호입니다.")
-    
-    with register_tab:
-        register_username = st.text_input("새 사용자 이름", key="register_username")
-        register_password = st.text_input("새 비밀번호", type="password", key="register_password")
-        if st.button("회원가입", key="register_button"):
-            db = next(get_db())
-            if db.query(User).filter(User.username == register_username).first():
-                st.error("이미 존재하는 사용자 이름입니다.")
-            else:
-                new_user = User(
-                    username=register_username,
-                    password_hash=hash_password(register_password)
-                )
-                db.add(new_user)
-                db.commit()
-                st.success("회원가입 성공! 로그인해주세요.")
+if 'current_emotion' not in st.session_state:
+    st.session_state.current_emotion = None
 
-# 감정 선택 페이지
-def show_emotion_select_page():
-    global emotions  # 전역 변수 emotions 사용
-    
-    st.title("Mindtone")
-    st.write(f"안녕하세요, {st.session_state.username}님! 지금 어떤 감정이 드시나요?")
-    
-    # 로그아웃 버튼
-    if st.button("로그아웃", key="emotion_page_logout"):
-        st.session_state.user_id = None
-        st.session_state.username = None
-        st.session_state.messages = []
-        st.session_state.current_emotion = None
-        st.session_state.current_conversation_id = None
-        st.session_state.page = 'login'
-        st.session_state.show_stats = False
-        st.rerun()
-    
-    # 감정 통계 버튼
-    if st.button("감정 분포 보기" if not st.session_state.show_stats else "감정 분포 숨기기"):
-        st.session_state.show_stats = not st.session_state.show_stats
-        st.rerun()
-    
-    # 감정 통계 표시
-    if st.session_state.show_stats:
-        st.subheader("감정 통계")
-        db = next(get_db())
-        conversations = db.query(Conversation).filter(Conversation.user_id == st.session_state.user_id).all()
-        if conversations:
-            emotions_list = [conv.emotion for conv in conversations]
-            emotion_counts = pd.Series(emotions_list).value_counts()
-            fig = px.pie(values=emotion_counts.values, names=emotion_counts.index, title="감정 분포")
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("아직 감정 데이터가 없습니다.")
-    
-    # 감정 버튼 행 생성
-    col1, col2, col3, col4 = st.columns(4)
-    cols = [col1, col2, col3, col4]
+if 'emotion_history' not in st.session_state:
+    st.session_state.emotion_history = []
 
-    for idx, (emotion, emoji) in enumerate(emotions.items()):
-        col_idx = idx % 4
-        button_text = f"{emoji} {emotion}"
-        
-        button_class = "emotion-button"
-        
-        with cols[col_idx]:
-            st.markdown(f'<div class="{button_class}">', unsafe_allow_html=True)
-            if st.button(button_text, key=f"emotion_{emotion}"):
-                # 새로운 대화 시작
-                db = next(get_db())
-                new_conversation = Conversation(
-                    user_id=st.session_state.user_id,
-                    emotion=emotion
-                )
-                db.add(new_conversation)
-                db.commit()
-                
-                # 세션 상태 업데이트
-                st.session_state.current_emotion = emotion
-                st.session_state.current_conversation_id = new_conversation.id
-                st.session_state.messages = []
-                
-                # AI의 첫 응답 추가
-                ai_first_msg = f"안녕하세요! 오늘 {emotion} 감정을 느끼고 계시는군요. 어떤 일이 있으신가요?"
-                st.session_state.messages.append({"role": "assistant", "content": ai_first_msg})
-                
-                # 메시지 저장
-                new_message = Message(
-                    conversation_id=st.session_state.current_conversation_id,
-                    role="assistant",
-                    content=ai_first_msg
-                )
-                db.add(new_message)
-                db.commit()
-                
-                # 채팅 페이지로 이동
-                st.session_state.page = 'chat'
-                st.rerun()
-            st.markdown('</div>', unsafe_allow_html=True)
-
-# 채팅 페이지
-def show_chat_page():
-    global emotions  # 전역 변수 emotions 사용
-    
-    st.title("Mindtone")
-    
-    # 탐색 버튼
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("← 감정 선택으로 돌아가기"):
-            st.session_state.messages = []
-            st.session_state.current_emotion = None
-            st.session_state.page = 'emotion_select'
-            st.rerun()
-    with col2:
-        if st.button("로그아웃", key="chat_page_logout"):
-            st.session_state.user_id = None
-            st.session_state.username = None
-            st.session_state.messages = []
-            st.session_state.current_emotion = None
-            st.session_state.current_conversation_id = None
-            st.session_state.page = 'login'
-            st.session_state.show_stats = False
-            st.rerun()
-            
-    # 현재 선택된 감정 표시
-    st.write(f"현재 감정: {emotions[st.session_state.current_emotion]} {st.session_state.current_emotion}")
-    
-    # 채팅 인터페이스 표시
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.write(message["content"])
-    
-    # 사용자 입력
-    if prompt := st.chat_input("메시지를 입력하세요"):
+# 사용자 메시지 전송 함수
+def send_message(message, emotion):
+    if message:
         # 사용자 메시지 추가
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.write(prompt)
-            
-        # 메시지 저장
-        db = next(get_db())
-        new_message = Message(
-            conversation_id=st.session_state.current_conversation_id,
-            role="user",
-            content=prompt
-        )
-        db.add(new_message)
+        st.session_state.messages.append({"role": "user", "content": message})
         
-        # AI 응답 생성
-        with st.chat_message("assistant"):
-            with st.spinner("생각 중..."):
-                messages = [
-                    {"role": "system", "content": f"""당신은 공감 능력이 뛰어난 정신건강 상담사입니다. 
-                    사용자가 '{st.session_state.current_emotion}' 감정을 느끼고 있습니다.
-                    
-                    상담 지침:
-                    1. 사용자의 감정을 먼저 인정하고 공감해주세요.
-                    2. 전문적인 용어는 자제하고, 친근하고 부드러운 말투를 사용하세요.
-                    3. 사용자의 이야기를 경청하고, 판단하지 않으세요.
-                    4. 필요할 때 적절한 위로와 격려를 해주세요.
-                    5. 사용자가 스스로 해결책을 찾을 수 있도록 도와주세요.
-                    6. 긍정적인 방향으로 대화를 이끌어가되, 무리한 긍정은 피하세요.
-                    7. 위험한 상황이 감지되면 전문가 상담을 권유하세요.
-                    
-                    항상 따뜻하고 이해심 있는 태도로 대화해주세요."""}
+        # OpenAI API를 통해 응답 생성
+        try:
+            response = openai.ChatCompletion.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": f"당신은 사용자의 {emotion} 감정을 공감하고 지원하는 상담사입니다. 사용자의 감정에 맞게 공감적이고 도움이 되는 대화를 나누세요. 답변은 간결하게 1-2문장으로 작성하세요."},
+                    *[{"role": m["role"], "content": m["content"]} for m in st.session_state.messages]
                 ]
-                
-                for msg in st.session_state.messages:
-                    messages.append(msg)
-                
-                response = openai.ChatCompletion.create(
-                    model="gpt-3.5-turbo",
-                    messages=messages
-                )
-                
-                ai_response = response.choices[0].message.content
-                st.write(ai_response)
-                
-                # AI 응답 저장
-                st.session_state.messages.append({"role": "assistant", "content": ai_response})
-                new_message = Message(
-                    conversation_id=st.session_state.current_conversation_id,
-                    role="assistant",
-                    content=ai_response
-                )
-                db.add(new_message)
-                db.commit()
+            )
+            
+            # AI 응답 추가
+            ai_response = response.choices[0].message.content
+            st.session_state.messages.append({"role": "assistant", "content": ai_response})
+        
+        except Exception as e:
+            st.error(f"OpenAI API 호출 중 오류가 발생했습니다: {e}")
+            st.session_state.messages.append({"role": "assistant", "content": "죄송합니다. 응답을 생성하는 동안 오류가 발생했습니다."})
 
-# 페이지 라우팅
-if st.session_state.user_id is None:
-    show_login_page()
-elif st.session_state.page == 'emotion_select':
-    show_emotion_select_page()
-elif st.session_state.page == 'chat':
-    show_chat_page() 
+# 감정 선택 함수
+def select_emotion(emotion):
+    st.session_state.current_emotion = emotion
+    
+    # 감정 기록에 현재 감정과 시간 저장
+    st.session_state.emotion_history.append({
+        "emotion": emotion,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M")
+    })
+    
+    # 새 대화 시작 메시지
+    if not st.session_state.messages:
+        st.session_state.messages.append({
+            "role": "assistant", 
+            "content": f"안녕하세요! 오늘 {emotion} 감정을 느끼고 계시는군요. 어떤 일이 있으셨나요?"
+        })
+
+# 감정 통계 표시 함수
+def show_emotion_stats():
+    if st.session_state.emotion_history:
+        # 데이터프레임 생성
+        df = pd.DataFrame(st.session_state.emotion_history)
+        
+        # 감정별 빈도수 계산
+        emotion_counts = df['emotion'].value_counts().reset_index()
+        emotion_counts.columns = ['감정', '횟수']
+        
+        # 그래프 생성
+        fig = px.bar(
+            emotion_counts, 
+            x='감정', 
+            y='횟수',
+            title='나의 감정 통계',
+            color='감정',
+            color_discrete_map={
+                "행복": "#FFDE7D",
+                "슬픔": "#9DB4FF",
+                "화남": "#FF9F9F",
+                "불안": "#B69CFF",
+                "지침": "#A0E4B0"
+            }
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("아직 감정 기록이 없습니다.")
+
+# 감정별 팁 제공 함수
+def show_emotion_tips(emotion):
+    tips = {
+        "행복": [
+            "행복한 순간을 일기에 기록해보세요.",
+            "주변 사람들과 기쁨을 나누어 보세요.",
+            "감사한 일 3가지를 생각해보세요."
+        ],
+        "슬픔": [
+            "자신의 감정을 부정하지 말고 충분히 느껴보세요.",
+            "믿을 수 있는 사람에게 감정을 표현해보세요.",
+            "명상을 통해 마음을 진정시켜보세요."
+        ],
+        "화남": [
+            "깊게 심호흡을 10번 해보세요.",
+            "잠시 자리를 떠나 산책해보세요.",
+            "감정을 글로 표현해보세요."
+        ],
+        "불안": [
+            "5-4-3-2-1 기법: 보이는 것 5가지, 들리는 것 4가지, 느껴지는 것 3가지, 냄새 2가지, 맛 1가지를 의식해보세요.",
+            "규칙적인 호흡으로 마음을 안정시켜보세요.",
+            "불안한 생각을 객관적으로 바라보세요."
+        ],
+        "지침": [
+            "짧은 낮잠(20-30분)이 도움이 될 수 있어요.",
+            "가벼운 스트레칭을 해보세요.",
+            "충분한 물을 마시고 건강한 간식을 드세요."
+        ]
+    }
+    
+    if emotion in tips:
+        st.markdown("### 도움이 될 만한 팁")
+        for tip in tips[emotion]:
+            st.markdown(f"- {tip}")
+
+# 메인 UI
+def main():
+    st.title("🧠 Mindtone - 감정 지원 챗봇")
+    
+    # 사이드바
+    with st.sidebar:
+        st.header("내 감정 기록")
+        
+        # 감정 통계 표시
+        show_emotion_stats()
+        
+        # 대화 초기화 버튼
+        if st.button("새 대화 시작"):
+            st.session_state.messages = []
+            st.session_state.current_emotion = None
+            st.experimental_rerun()
+    
+    # 감정 선택 부분
+    if st.session_state.current_emotion is None:
+        st.markdown("### 지금 기분이 어떠신가요?")
+        
+        col1, col2, col3, col4, col5 = st.columns(5)
+        
+        with col1:
+            if st.button("😊 행복", key="happy", help="행복하고 기쁜 감정", 
+                        use_container_width=True):
+                select_emotion("행복")
+        
+        with col2:
+            if st.button("😢 슬픔", key="sad", help="슬프고 우울한 감정", 
+                        use_container_width=True):
+                select_emotion("슬픔")
+        
+        with col3:
+            if st.button("😠 화남", key="angry", help="화나고 짜증나는 감정", 
+                        use_container_width=True):
+                select_emotion("화남")
+        
+        with col4:
+            if st.button("😰 불안", key="anxious", help="불안하고 걱정되는 감정", 
+                        use_container_width=True):
+                select_emotion("불안")
+        
+        with col5:
+            if st.button("😩 지침", key="tired", help="지치고 피곤한 감정", 
+                        use_container_width=True):
+                select_emotion("지침")
+    
+    # 대화 인터페이스
+    else:
+        st.markdown(f"### 현재 감정: {st.session_state.current_emotion}")
+        
+        # 팁 표시
+        show_emotion_tips(st.session_state.current_emotion)
+        
+        # 채팅 컨테이너
+        chat_container = st.container()
+        
+        with chat_container:
+            st.markdown('<div class="chat-container">', unsafe_allow_html=True)
+            
+            # 메시지 표시
+            for message in st.session_state.messages:
+                if message["role"] == "user":
+                    st.markdown(f'<div class="clearfix"><div class="user-bubble">{message["content"]}</div></div>', 
+                                unsafe_allow_html=True)
+                else:
+                    st.markdown(f'<div class="clearfix"><div class="ai-bubble">{message["content"]}</div></div>', 
+                                unsafe_allow_html=True)
+            
+            st.markdown('</div>', unsafe_allow_html=True)
+        
+        # 메시지 입력
+        with st.form(key="message_form", clear_on_submit=True):
+            user_input = st.text_area("메시지 입력:", height=100)
+            submit_button = st.form_submit_button("전송")
+            
+            if submit_button and user_input:
+                send_message(user_input, st.session_state.current_emotion)
+                st.experimental_rerun()
+
+if __name__ == "__main__":
+    main() 
